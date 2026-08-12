@@ -1,0 +1,73 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: team-a-subpath
+  namespace: team-a
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "team-a.cka.test"
+      http:
+        paths:
+          - path: "/exact-test"
+            pathType: Exact
+            backend:
+              service:
+                name: web-svc
+                port:
+                  number: 80       
+          - path: "/prefix-test"
+            pathType: Prefix
+            backend:
+              service:
+                name: web-svc
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: team-a
+  namespace: team-a
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - "secure.cka.test"
+      secretName: apps-tls
+  rules:
+    - host: "secure.cka.test"
+      http:
+        paths:
+          - path: "/team-a(/|$)(.*)"
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web-svc
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: team-b
+  namespace: team-b
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "apps.cka.test"
+      http:
+        paths:
+        - path: "/team-b(/|$)(.*)"
+          pathType: ImplementationSpecific
+          backend:
+            service:
+                name: web-svc
+                port:
+                  number: 8080

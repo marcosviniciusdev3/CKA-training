@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-b
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-content
+  namespace: team-a
+data:
+  index.html: |
+    <h1>Hello from Team A</h1>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: team-a
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html
+      volumes:
+        - name: content
+          configMap:
+            name: web-content
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-svc
+  namespace: team-a
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-content
+  namespace: team-b
+data:
+  index.html: |
+    <h1>Hello from Team B</h1>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: team-b
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html
+      volumes:
+        - name: content
+          configMap:
+            name: web-content
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-svc
+  namespace: team-b
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 8080
+      targetPort: 80

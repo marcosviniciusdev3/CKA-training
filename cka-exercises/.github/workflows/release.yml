@@ -1,0 +1,67 @@
+name: Release
+
+# Manual-dispatch release pipeline. Reads CHANGELOG's [Unreleased] block,
+# infers a semver bump (or honours an explicit override), rewrites
+# CHANGELOG + package.json, tags + pushes, files a GitHub Release with
+# the release notes drawn from the freshly-named version block.
+#
+# See scripts/release.mjs for the algorithm. Designed for one maintainer
+# hitting "Run workflow" in the Actions UI after merging the last batch
+# of changelog-eligible commits.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump strategy'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - major
+          - minor
+          - patch
+      dry_run:
+        description: 'Preview only — do not write/commit/push'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # IMPORTANT: checkout AND release step both use secrets.RELEASE_PAT,
+      # not the default GITHUB_TOKEN. main is protected by a Repository
+      # Rule whose bypass list only accepts Roles (Repository admin /
+      # Maintain) — github-actions[bot] doesn't match any of those, so
+      # the default token's push gets rejected with GH013. PAT path
+      # makes the push happen as the admin user instead, which is on
+      # the bypass list. See CLAUDE.md `## Release workflow →
+      # One-time setup`.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Configure git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Run release script
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          FLAGS="--bump=${{ inputs.bump }}"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          node scripts/release.mjs $FLAGS

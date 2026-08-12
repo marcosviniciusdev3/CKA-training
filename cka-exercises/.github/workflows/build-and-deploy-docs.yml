@@ -1,0 +1,80 @@
+name: Build and deploy docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'exercises/**'
+      - 'docs/**'
+      - 'scripts/build-exercises.mjs'
+      - 'scripts/build-kubectl-tools.mjs'
+      - 'scripts/build-kubectl-help.mjs'
+      - 'scripts/build-tools-bundle.mjs'
+      - 'scripts/build-sw.mjs'
+      - 'scripts/lint-exercises.mjs'
+      - 'WEBAPP_GUIDE.md'
+      - 'WEBAPP_GUIDE_CN.md'
+      - 'EXAM_GUIDE.md'
+      - 'EXAM_GUIDE_CN.md'
+      - 'CHANGELOG.md'
+      - '.github/workflows/build-and-deploy-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so scripts/build-exercises.mjs can run `git describe`
+          # / `rev-list --count` to compute the dev-vs-release channel
+          # fingerprint baked into version.json.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # Cache kubectl binaries downloaded by build-tools-bundle.mjs (one per
+      # supported minor — currently 1.34 + 1.35). Cache invalidates whenever
+      # the orchestrator script changes, in case the version selection logic
+      # shifts.
+      - name: Cache kubectl binaries
+        uses: actions/cache@v4
+        with:
+          path: tools/.bin
+          key: kubectl-bins-${{ hashFiles('scripts/build-tools-bundle.mjs') }}
+      - name: Lint exercises markdown
+        run: node scripts/lint-exercises.mjs
+      - name: Build exercises.json
+        run: node scripts/build-exercises.mjs
+      - name: Build service worker
+        run: node scripts/build-sw.mjs
+      # Builds docs/tools-versions.json + docs/tools-<minor>.json for each
+      # supported kubernetes minor. Orchestrator downloads pinned kubectl
+      # binaries via dl.k8s.io, walks help text, fetches OpenAPI per minor.
+      - name: Build per-version Tools bundles
+        run: node scripts/build-tools-bundle.mjs
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
