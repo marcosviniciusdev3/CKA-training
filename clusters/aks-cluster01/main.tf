@@ -17,22 +17,31 @@ resource "azurerm_kubernetes_cluster" "aks_cluster01" {
   resource_group_name = azurerm_resource_group.rg.name
   dns_prefix          = "aks-cluster01"
 
-  node_provisioning_profile {
-    default_node_pools = "Auto"
-  }
-  
   default_node_pool {
     name       = "systempool"
-    node_count = 2
+    node_count = 1
     vm_size    = "Standard_B2s"
     os_sku     = "Ubuntu"
+    only_critical_addons_enabled  = true
   }
 
   identity {
     type = "SystemAssigned"
   }
-
+  
   tags = {
     Environment = "Development"
   }
 }
+
+resource "azurerm_kubernetes_cluster_node_pool" "devpool" {
+  name                  = "devpool"
+  kubernetes_cluster_id = azurerm_kubernetes_cluster.aks_cluster01.id
+  vm_size               = "Standard_B2s"
+  node_count            = 1
+
+  node_labels = {
+    environment = "development"
+  }
+}
+
