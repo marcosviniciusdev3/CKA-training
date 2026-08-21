@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: payment-gateway
+    tier: backend
+  name: payment-gateway
+  namespace: finance-prod
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: payment-gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: payment-gateway
+    spec:
+      serviceAccountName: processor-sa
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: 
+                        - payment-gateway
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        - image: busybox:1.36.1
+          name: init-db-ping
+          command: ["sh", "-c", "until nc -z -w 2 db-service 5432; do echo 'waiting for db-service...'; sleep 2; done"]
+      containers:
+        - image: nginx:1.25.2-alpine
+          name: web-app
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "150Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          ports:
+            - name: http
+              containerPort: 80
+          livenessProbe:
+            httpGet:
+              port: 80
+              path: /
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              port: 80
+              path: /
+            initialDelaySeconds: 2
+            periodSeconds: 5
