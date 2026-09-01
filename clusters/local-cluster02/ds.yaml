@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-collector
+  namespace: default
+  labels:
+    app: log-collector
+spec:
+  selector:
+    matchLabels:
+      name: busybox
+  template:
+    metadata:
+      labels:
+        name: busybox
+    spec:
+      tolerations:
+      - operator: "Exists"
+      containers:
+      - name: busybox
+        image: busybox
+        command: ["sleep", "3600"]

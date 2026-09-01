@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: load-generator-curl6
+spec:
+  containers:
+  - name: curl
+    image: curlimages/curl:latest
+    command: ["/bin/sh", "-c"]
+    args:
+    # Adjust the sleep duration to speed up or slow down the requests
+    - "while true; do curl -s -o /dev/null -w 'Status: %{http_code}\n' http://load-svc.exercise-16.svc.cluster.local:80/; sleep 0.001; done"
+  restartPolicy: Never

@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: load-generator-fortio-ramp
+  namespace: exercise-16
+spec:
+  containers:
+  - name: fortio-runner
+    image: alpine:latest
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      echo "Installing Fortio..."
+      # Download the latest fortio binary dynamically
+      wget -qO /usr/local/bin/fortio https://github.com/fortio/fortio/releases/latest/download/fortio-linux_amd64
+      chmod +x /usr/local/bin/fortio
+      
+      echo "Starting ramp-up load test..."
+      # Define your QPS stages here
+      for qps in 100 500 1000 2000 5000; do
+        echo "================================================="
+        echo "Running at $qps QPS for 2 minutes..."
+        echo "================================================="
+        
+        fortio load -c 200 -qps $qps -t 2m http://load-svc.exercise-16.svc.cluster.local:80/
+        
+        sleep 15 
+      done
+      
+      echo "Load test complete."
+  restartPolicy: Never

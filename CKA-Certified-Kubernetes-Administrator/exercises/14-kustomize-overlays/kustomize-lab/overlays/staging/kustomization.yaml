@@ -1,0 +1,11 @@
+resources:
+  - ../../base
+
+namespace: exercise-14
+commonLabels:
+  env: staging
+patches:
+- path: patches/deployment-increase-replicas.yaml
+  target:
+    kind: Deployment
+    name: app

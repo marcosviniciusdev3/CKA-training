@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-storage
+  namespace: exercise-25
+spec:
+  volumes:
+    - name: storage
+      persistentVolumeClaim:
+        claimName: local-pvc 
+  containers:
+    - name: busybox
+      image: busybox:1.36
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - mountPath: "/data"
+          name: storage
+
+
+

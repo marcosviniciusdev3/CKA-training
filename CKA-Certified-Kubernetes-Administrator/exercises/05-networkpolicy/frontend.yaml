@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: frontend
+    role: frontend
+  name: frontend
+spec:
+  containers:
+  - image: nginx:1.27
+    name: frontend
+    resources: {}
+  restartPolicy: Always
+status: {}

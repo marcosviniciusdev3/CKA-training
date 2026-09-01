@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: temp-worker
+spec:
+  tolerations:
+  - key: "maintenance"
+    operator: "Equal"
+    value: "true"
+    effect: "NoExecute"
+    tolerationSeconds: 30
+  - key: "dedicated"
+    operator: "Equal"
+    value: "devteam"
+    effect: "NoSchedule"
+  containers:
+  - name: busybox
+    image: busybox
+    command: ["sleep", "3600"]

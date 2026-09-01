@@ -1,0 +1,367 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+CKA (Certified Kubernetes Administrator) exam preparation, based on [CKA Curriculum v1.35](https://github.com/cncf/curriculum). Originally sourced from [chadmcrowell/CKA-Exercises](https://github.com/chadmcrowell/CKA-Exercises), then reorganized by exam curriculum structure and substantially enriched with: kubernetes.io documentation breadcrumbs on every exercise, past-exam questions, the killer.sh Simulator A & B questions (PDF source in `assets/killer-sh/`), the KillerCoda CKA mock exams (PDF source in `assets/killercoda/`, one per domain), and a static SPA in `docs/` that surfaces all of this with browse / quiz / docs-tree modes.
+
+Currently 271 exercises across 5 domains. The repo has a small Node-based build pipeline that compiles the markdown into `docs/exercises.json` (consumed by the SPA at runtime), but **no runtime dependencies** — Marked.js loads from CDN.
+
+## Repository Layout
+
+See **[`README.md` → Project Structure](README.md#project-structure)** for the authoritative per-file inventory. Detailed maintainer-side notes about which scripts run in CI, what each workflow does, and which artifacts are gitignored vs committed live below under `## Build Pipeline`, `## CI / Deployment`, and `## Release workflow`.
+
+## Exercise File Format
+
+Each H3 block in `exercises/*.md` is one exercise. The structure has evolved into a fairly rich, regular shape:
+
+```markdown
+### [<TAG>] <Display title>
+
+> 🔗 [<Primary breadcrumb>](<URL>)
+> [<Secondary breadcrumb>](<URL>)        # 0+ additional kubernetes.io hints
+
+> 🖥 Solve on: `ssh <hostname>`          # killer.sh only — extracted as `solveOn` field
+
+**Task:**
+
+<Verbatim task prose; supports markdown lists>
+
+> ℹ️ <Info note from PDF>                # rendered as blue info-callout in SPA
+
+**Lab context:**                         # optional — included for killer.sh entries
+
+- <Bullet describing initial state>
+- ```yaml
+  <Initial file contents the question references>
+  ```
+
+<details><summary>show</summary>
+<p>
+
+```bash
+<Solution commands>
+```
+
+</p>
+</details>
+```
+
+### Tag prefixes
+
+The H3 title's bracketed prefix classifies the entry. Parsed by `classifyTag()` in `scripts/build-exercises.mjs`:
+
+| Prefix in title                       | Internal tag       | Source                               |
+|---------------------------------------|--------------------|--------------------------------------|
+| (no prefix)                           | `general`          | reorganized from chadmcrowell + new |
+| `[CKA Past Exam - <N> pts]`           | `cka-past-exam`    | past-exam collections (19 entries)   |
+| `[Killer.sh A-Q<N>]`                  | `killersh-a`       | killer.sh Simulator A PDF (17 entries) |
+| `[Killer.sh B-Q<N>]`                  | `killersh-b`       | killer.sh Simulator B PDF (17 entries) |
+| `[KillerCoda-Q<N>]`                   | `killercoda`       | KillerCoda CKA mock exam PDFs (one per domain, in `assets/killercoda/`; 66 entries total — source PDFs have gaps in their numbering) |
+
+### Section structure (H2)
+
+- `## 考试大纲考点` — exam-topic checklist for the domain (skipped by parser)
+- `## <N>. <Section title>` — numbered curriculum sub-section with `## 1.` … `## N.`
+- `## Killer.sh Mock Exam Questions` — special section housing killer.sh entries (`sectionNumber = 99`, `kind = 'killersh'`)
+- `## KillerCoda Mock Exam Questions` — same shape for KillerCoda entries (`sectionNumber = 98`, `kind = 'killercoda'`)
+
+## Build Pipeline
+
+### `scripts/build-exercises.mjs`
+
+Pure Node (no deps; built-ins only). For each markdown file:
+
+1. Splits on H2 headings; identifies numbered sections vs. the killer.sh trailing section vs. intro (skipped).
+2. Within each section, splits on H3 to get exercises.
+3. `parseExercise()` extracts:
+   - `docsLinks: [{ text, url }]` — all `[label](url)` matches inside the `> 🔗 …` blockquote and any following `> …` lines (multi-link support).
+   - `solveOn` — extracted from `> 🖥 Solve on: \`ssh xxx\`` if present (killer.sh).
+   - `task` — markdown between the docs block and first `<details>`. Strips the `> 🖥` line.
+   - `solution` — concatenated content of all `<details>` blocks (with `<p>` wrappers stripped). Multiple `<details>` are joined with `---` and named summaries become `**bold**` headings.
+   - `tag`, `points`, `displayTitle`, `fullTitle` — derived from the H3 prefix. `points` regex supports both `- N pts` (current) and `- N分` (legacy).
+4. After parsing, a post-pass assigns `numberInDomain` (1..N) to each exercise in source order.
+
+Output: `docs/exercises.json`. Gitignored. Regenerated on every `npm run build`, `npm run serve` (via `preserve` hook), and CI deploy.
+
+### `scripts/build-tools-bundle.mjs` (orchestrator) + per-version scripts
+
+The Tools-tab payload is per-kubernetes-minor — one `docs/tools-<minor>.json` per version, plus a tiny `docs/tools-versions.json` manifest. `scripts/build-tools-bundle.mjs` orchestrates the whole pipeline:
+
+1. **Picks minors to build.** Probes `https://dl.k8s.io/release/stable.txt` to learn the latest k8s patch, derives `latest + previous + CKA target (1.35)`, dedupes. Skip the probe with `--minors=1.35,1.34` for local dev / single-version builds.
+2. **Downloads each pinned kubectl** to `tools/.bin/kubectl-<minor>` from `dl.k8s.io/release/<patch>/bin/<os>/<arch>/kubectl` (cached across CI runs via `actions/cache@v4`).
+3. **Per minor**, invokes the two low-level scripts:
+   - `build-kubectl-help.mjs --kubectl=<path> --minor=<X.Y>` — walks `<verb> -h` output via the captured binary, emits `tools/kubectl-help-<minor>.json` (~220KB, ~78 commands).
+   - `build-kubectl-tools.mjs --minor=<X.Y>` — fetches OpenAPI from `kubernetes/kubernetes@release-<minor>`, walks the curated `INCLUDED_KINDS` list (32 CKA-relevant resources) plus transitively reachable sub-schemas, merges in the kubectl-help, writes `docs/tools-<minor>.json` (~790KB, budget 800KB). `STOP_AT_REF` blocks `JSONSchemaProps` recursion to keep size in check. The kubectl-help half is ~240 KB (95 commands incl. the `kubectl config` subtree + `kubectl options`); the OpenAPI walk is the bulk of the rest. If a future change pushes the bundle past 800 KB, either prune additional unused commands in `build-kubectl-help.mjs`'s SKIP set or tighten `INCLUDED_KINDS` / `STOP_AT_REF`.
+4. **Writes** `docs/tools-versions.json` with `{ default: "1.35", versions: [...] }` — the SPA reads this on first Tools-tab visit to populate the version dropdown and pick the active bundle.
+
+Run locally: `npm run build:tools-bundle` (auto-detects minors) or `npm run build:tools-bundle -- --minors=1.35` (single version). CI runs the orchestrator directly — no `azure/setup-kubectl` step, because the orchestrator handles its own binaries.
+
+Low-level scripts both accept `--minor=X.Y` to emit version-suffixed paths; without `--minor` they use legacy single-version paths (`tools/kubectl-help.json`, `docs/tools.json`) for backwards compatibility, though nothing in the current pipeline uses that mode.
+
+### `scripts/build-nodes-snapshot.mjs`
+
+Produces the read-only filesystem snapshot for the 🖥 Nodes mode tab (kubeadm CP + worker). Reads source files committed under `tools/nodes/snapshot/files/{controlplane,worker}/<actual-fs-path>`, applies `{{KUBE_VERSION_FULL}}` / `{{PAUSE_VERSION}}` / etc. placeholder substitution from `tools/nodes/snapshot/versions.json`, and writes `docs/nodes-<minor>.json` (~30KB, gitignored). Called by `build-tools-bundle.mjs` per minor; manifest entries gain a `nodesFile` field so the SPA can locate each version's payload.
+
+To refresh content (e.g. after a kubeadm template change): edit source files directly, rerun `npm run build:tools-bundle -- --minors=1.35`. See `tools/nodes/snapshot/README.md` for provenance + redaction policy.
+
+### Tag identifier rename
+
+Tags were renamed from Chinese (`CKA 真题`, `4分`) to English (`CKA Past Exam`, `4 pts`) for consistency. The `extractPoints()` regex still matches both forms for safety — but new entries should use the English form.
+
+## SPA (`docs/`)
+
+Three top-level modes (tabs in the header):
+
+- **📚 Browse** — sidebar tree (domain → section → exercise), filter bar (domain, tag, search, bookmarks, undone, reveal-solutions toggle), exercise cards with task/solution markdown rendered via Marked.js, per-card Done/Bookmark, code-block Copy buttons.
+- **🎯 Quiz** — pre-quiz form (source filters + count + time limit + solution-visibility policy), active session with sticky countdown timer + prev/next/flag/skip/grade controls, end-of-session summary.
+- **📖 Docs** — two-pane: left = multi-level collapsible tree mirroring kubernetes.io navigation, built from breadcrumbs at runtime; right = selected page detail with breadcrumb, link-out, and the list of exercises referencing it.
+
+### CodeMirror via JSPM importmap (DO NOT revert)
+
+The answer-editor's CodeMirror dependencies (state / view / language / commands / lang-yaml / legacy-modes/mode/shell / codemirror / lezer-*) resolve via a `<script type="importmap">` block in `docs/index.html`, served by JSPM (`https://ga.jspm.io/...`). `docs/app.js`'s `loadCodeMirror()` then does bare-specifier dynamic imports (`import('@codemirror/view')` etc.). Every `@codemirror/*` and `@lezer/*` specifier — including the transitive ones loaded inside `basicSetup` — resolves to **exactly one URL**. That's what makes `StreamLanguage.define(shell)`'s tag-identity work correctly and bash syntax highlighting actually appear.
+
+**DO NOT** swap back to esm.sh's `?deps=` cascade — three earlier attempts in this codebase silently produced two `@lezer/highlight` instances, which failed `instanceof` tag checks. The cautionary trail lives in commits `e085d9f` → `ca19cc9` → `5cd5433` → `a5738a7`.
+
+Bash highlighting in the answer editor uses `@codemirror/legacy-modes/mode/shell` + `StreamLanguage.define` from the same importmap. The corpus is bash-heavy (kubectl + openssl + heredocs), so shell mode is the right default — YAML inside heredocs renders as plain text (acceptable trade-off; nested parsing is out of scope).
+
+State management is in module-scope `State` object; no framework. Persistence via `localStorage`:
+
+| Key              | Purpose                                            |
+|------------------|----------------------------------------------------|
+| `cka:done`       | `{ exerciseId: true }` — Done checkboxes           |
+| `cka:bookmark`   | `{ exerciseId: true }` — ⭐ bookmarks              |
+| `cka:theme`      | `"light" | "dark"`                                  |
+| `cka:lastQuiz`   | last quiz settings (count, time, source filters)   |
+| `cka:docs:lastUrl` | last-selected leaf in Docs tab (auto-restore)    |
+| `cka:llm:settings` | LLM grading config — v2 per-provider shape (providers + active + autoDoneThreshold) |
+| `cka:llm:privacyAck` | `true` after the first-use privacy dialog dismissal |
+| `cka:install:dismissed` | `true` after the user dismisses the install-to-home-screen hint banner (suppresses it on future visits) |
+| `cka:answer:<id>` | per-exercise saved answer + last verdict (with provider/model/usage pinned at grade-time) |
+| `cka:gist:token` | GitHub PAT (never exported, never round-tripped through gist) |
+| `cka:gist:id`    | Gist ID used by Push / Pull |
+| `cka:sync:meta`  | Per-device sync metadata — last push/pull/test timestamps, lastError, `lastSyncedGistUpdatedAt` (the conflict-detection baseline the per-key merge engine compares remote `updated_at` against) |
+| `cka:sync:prepull-backup` | Snapshot taken before any Pull / Import; restorable via the Settings button (integral overwrite via `restoreFromBackup`, distinct from the per-key `mergePayload` path) |
+| `cka:sync:autoDisabled` | `true` if the user opted out of auto-push |
+| `cka:sync:dirtyAt` | ISO timestamp of last sync-worthy edit; cleared after a successful auto-push. 1 h TTL on boot/visibility-change so stale flags from long-dead sessions don't push surprise edits |
+| `cka:sync:keymeta` | Per-key + per-id timestamps powering the merge engine — included in gist payload so devices can resolve "set union for done/bookmark", "take-newer for answers", and tombstone semantics across concurrent edits |
+| `cka:sync:beaconedAt` | ISO stamp written after a successful `beforeunload` `beaconPush()`; consumed once on next `bootAutoSync` to refresh `lastSyncedGistUpdatedAt` from the actual current gist `updated_at` (closes the iPhone "self-conflict" loop where the device's own beacon push looked like a remote change next session) |
+| `cka:sync:deviceId` | Random UUID minted once per browser profile on first auto-sync; copied into `payload.meta.lastPushDeviceId` for cross-device logging. Excluded from payload otherwise (per-device) |
+| `cka:sync:lastPollAt` (sessionStorage) | ISO timestamp of the last `maybeAutoPull()` head-check; throttles idle-tab auto-pull to ≤ 1× per 5 min per tab. Cleared on tab close (sessionStorage, not localStorage) |
+| `cka:update:lastCheckAt` (sessionStorage) | ISO timestamp of the last `maybeCheckForUpdate()` head-check against `version.json`; throttles auto-update detection to ≤ 1× per 60 s per tab regardless of trigger (5-min interval / visibilitychange / SW controllerchange). Cleared on tab close (sessionStorage, not localStorage) |
+| `cka:fix-draft:<id>` | Per-exercise answer-fix queued draft — quick flag (`{flagged:true}`) and/or fully-written report payload (`type`, `additional`, etc.). Surfaces in the header 🐛 queue popover; submitted state tracked via optional `submittedAt` |
+| `cka:task-fix-draft:<id>` | Same shape as `cka:fix-draft:` but for task-side reports (docs-link / task-body issues). Listed independently in the queue popover |
+
+## Repository conventions
+
+### External standards we follow
+
+Don't reinvent — link out, treat as binding:
+
+- **Commit messages** — [Conventional Commits](https://www.conventionalcommits.org/) (`type(scope): subject`) plus [Chris Beams's 7 rules](https://cbeams.com/posts/git-commit/) for the rest: subject ≤50 chars, imperative mood, blank line between subject and body, body wrapped at 72, body explains *why* not *what*. Allowed types in this repo: `feat / fix / docs / style / refactor / perf / test / chore / ci / build / ux / release`.
+- **Versioning** — [Semantic Versioning 2.0.0](https://semver.org/). Owned by `scripts/release.mjs`; manual edits to `package.json.version` always go through that script.
+- **Changelog** — [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/). Category split (Added / Changed / Fixed / Removed) and `[Unreleased]` → `[vX.Y.Z]` renaming come from the spec; per-entry format is constrained further by `## Changelog discipline` below.
+- **Technical prose voice** — [Google Developer Documentation Style Guide](https://developers.google.com/style). US English spelling (`color` / `behavior` / `favorite`), second-person active voice in how-to / reference, ≤25-word sentences as a soft target.
+- **Documentation type identification** — [Diátaxis framework](https://diataxis.fr/). When adding a new doc or section, classify it as tutorial / how-to / reference / explanation before drafting — the four shapes have structurally different prose, and conflating them produces docs that satisfy nobody. Existing docs map roughly: `README.md` = explanation + reference, `EXAM_GUIDE.md` = reference, `WEBAPP_GUIDE.md` = how-to + reference, `CHANGELOG.md` = reference, inline Help mode pages = how-to.
+
+### Repo-specific rules
+
+- **Documentation language**: all committed prose in this repo defaults to **English** — `CHANGELOG.md`, `CLAUDE.md`, `README.md`, `EXAM_GUIDE.md`, `WEBAPP_GUIDE.md`, every script under `scripts/`, every `.github/` workflow + aider prompt, every source-code comment, every git commit message. Files with a `_CN` suffix (`README_CN.md`, `EXAM_GUIDE_CN.md`, `WEBAPP_GUIDE_CN.md`) are Chinese translations of their English counterparts — kept in lockstep with the English version, and the only place committed Chinese prose lands. Exercise titles + solutions are English; legacy in-corpus Chinese comments are tolerated but new entries default to English. Interactive chat / plan files under `~/.claude/plans/` / ad-hoc Q&A is session-scoped and may be in any language — it's not committed.
+- **Prose concision — calibrate to the reader's context**: every doc sits in a specific context. The same sentence can be essential in one doc and pure padding in another. A `cp … && git add && git commit` example belongs in a contributing guide for newcomers; the same block in a per-folder README aimed at someone already in the codebase is noise. Closing lines that restate the heading, and "this is a placeholder until X" pointers when the placeholder state is visually obvious, are usually padding in *most* contexts but can be the right call elsewhere. Before writing a sentence, ask: who is reading this, what do they already know from being here, what does this add. If removing it loses information the reader needed, keep it; if not, cut.
+- **Code comments — explain WHY, never WHAT**: default to no comments. Add one only when *why* is non-obvious: a hidden constraint, a subtle invariant, a workaround for a specific bug, behavior that would surprise a reader. Don't narrate *what* the code does (well-named identifiers handle that). Don't reference the current task / fix / caller — that belongs in the commit message and rots as the codebase evolves. No JSDoc / multi-paragraph block comments unless documenting a public API for external consumers (this repo currently has none).
+- **Emoji UI semantics — single fixed registry**: each emoji has one assigned semantic across all SPA surfaces. The same emoji on multiple surfaces is only allowed when those surfaces share that semantic (e.g. 🔧 = "Tools / kubectl reference" both as the mode tab and as the in-editor drawer button). Reusing an emoji for a *different* semantic is the collision class that triggered the v0.2.0 flag-scope picker rewrite. **Authoritative registry lives in [WEBAPP_GUIDE.md → §8 Emoji glossary](WEBAPP_GUIDE.md#8-emoji-glossary)** (and the CN mirror). Before introducing a new emoji to any UI surface, grep that table; pick something distinct or reuse the existing entry where the semantic matches. Update the WEBAPP_GUIDE table (EN + CN) in the same commit as any new emoji.
+
+- **Solution code**: kubectl-driven, exam-focused. Use the `k` alias shorthand. Include short comments at decision points (per the WHY-not-WHAT rule above).
+- **Bilingual exercise content**: English titles + solutions. The CN README and a few in-exercise comments may be Chinese (legacy from corpus origin), but new content should default to English. The webapp itself is English.
+- **Documentation links**: use the full kubernetes.io navigation breadcrumb as the label (e.g. `Tasks > Administer a Cluster > Operating etcd clusters for Kubernetes`). For killer.sh entries, additional breadcrumbs follow under the primary 🔗 link.
+- **Solutions** are wrapped in `<details><summary>show</summary><p>…</p></details>`. Multiple `<details>` blocks per exercise (rare) are allowed.
+- **External links** (helm.sh, gateway-api.sigs.k8s.io, containerd docs) live under the synthetic `External` bucket in the Docs tree.
+
+## Changelog discipline
+
+Format and category split follow [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) — not repeated here.
+
+What this repo adds on top:
+
+- **Every commit** touching webapp code (`docs/`), exercise content (`exercises/`), documentation (`README*.md`, `WEBAPP_GUIDE*.md`, `EXAM_GUIDE*.md`, `CHANGELOG.md`, `CLAUDE.md`, this file), or tooling (`scripts/`, `.github/`) MUST add an entry under `## [Unreleased]` in `CHANGELOG.md` in the same commit. When the user asks for a change WITHOUT mentioning the changelog, add the entry yourself; don't wait to be reminded.
+- **Entry format** (bold lead-phrase + one sentence):
+  ```
+  - **Lead phrase** — one short sentence describing the change. (`abc1234`)
+  ```
+  - Lead phrase: a bold noun phrase naming what changed (feature / surface / kind of fix). Scannable on its own in a long list.
+  - Body: one sentence after an em-dash, ≤ ~180 chars total. No multi-sentence paragraphs, no nested bullets.
+  - Trailing commit hash: backticked gitSha that introduced the change, in parens. Use `(this commit)` while the entry is under `[Unreleased]`; `scripts/release.mjs` currently does not auto-rewrite these on release — be intentional.
+- **Reasoning, root-cause, code-snippet rationale all belong in the commit message body**, not the changelog. CHANGELOG is a scannable index pointing at git history, not the explanation.
+- **Omit empty category sub-sections**: each release block only carries the `### Added / Changed / Fixed / Removed` headings that actually have entries. Don't leave an empty `### Removed` behind just because the template has four. If a category gains its first entry later in the release cycle, add the heading then.
+- **One heading per category per release**: when adding an entry, append into the existing `### Changed` (or matching category) for the current release block — don't add a second `### Changed` heading because the first commit shipped the original. The four-category split is by *kind of change*, not by *commit*.
+- **Exception**: pure cosmetic noise (typo in a commit message, fixing a CHANGELOG entry typo within its own commit) doesn't need a changelog entry.
+
+## Documentation sync discipline
+
+Every change to the codebase MUST also update any documentation that describes the changed behaviour, file structure, or user-facing flow — **in the same commit**. CHANGELOG.md is a per-change log; this rule is about keeping the *reference* docs from going stale.
+
+Triggers (any of these → corresponding doc gets touched in the same commit):
+
+- **Code file added / deleted / renamed** → CLAUDE.md `## Repository Layout` tree.
+- **New CI workflow, or workflow scope change** → CLAUDE.md `## Repository Layout` workflows tree AND `## CI / Deployment` section.
+- **SPA user-visible feature** (new button, mode, tab, setting, shortcut, banner, popover) → WEBAPP_GUIDE.md + WEBAPP_GUIDE_CN.md.
+- **New localStorage key** → CLAUDE.md localStorage table.
+- **Build pipeline change** (new build script, package.json scripts, output artifact format) → CLAUDE.md `## Build Pipeline`.
+- **Release / version mechanism change** → CLAUDE.md `## Release workflow`.
+- **README / WEBAPP_GUIDE / EXAM_GUIDE structural change** (new section, removed section) → CLAUDE.md `## Repository Layout`.
+
+Exception (no doc sync needed):
+
+- Pure refactors / typo fixes / comment edits that change zero observable behaviour and zero files in the layout.
+- Test additions whose scope is entirely internal.
+
+When the user asks for a code / exercise change WITHOUT mentioning docs, add the sync yourself — same commit as the code. Don't wait to be reminded; missing the sync makes the next contributor work from stale knowledge.
+
+## Release workflow
+
+The SPA carries an App-Store-style `vX.Y.Z` version label, surfaced in the header chip + the Refresh banner's version delta. The version lives in `package.json.version`; build time (`scripts/build-exercises.mjs`) stamps it into `docs/exercises.json` + `docs/version.json` + the service-worker cache key (`scripts/build-sw.mjs`). The `+dev.N` suffix in dev-build labels is SemVer build metadata (§10 — does not affect precedence); we use it informationally. The SPA's update detection compares `generatedAt` / `gitSha` rather than SemVer precedence, so the "build metadata MUST be ignored" rule doesn't conflict with anything.
+
+### Cutting a release
+
+Single maintainer, no CI gate beyond a manual trigger:
+
+1. Merge whatever commits the new release should include. Each commit must add a single line under `## [Unreleased]` per the changelog discipline above.
+2. Go to the **Actions** tab → **Release** → **Run workflow**. Pick `bump=auto` (recommended) or override with `major` / `minor` / `patch`. `dry_run=true` previews the result without writing files / pushing.
+3. The workflow runs `node scripts/release.mjs --bump=…` which:
+   - Reads `package.json.version` to know the current version.
+   - Parses `CHANGELOG.md`'s `[Unreleased]` block.
+   - **Infers the bump kind** from the section composition:
+     - v0.x.y phase (current): `### Removed` or any `BREAKING` marker → minor; `### Added` / `### Changed` → minor; only `### Fixed` → patch.
+     - v1.x.y+ phase: `### Removed` / BREAKING → major; `### Added` / `### Changed` → minor; only `### Fixed` → patch.
+   - Rewrites `CHANGELOG.md`: renames `## [Unreleased]` → `## [vX.Y.Z] - YYYY-MM-DD`, prepends a fresh empty `## [Unreleased]`, appends a compare-link reference at the bottom.
+   - Writes the new version into `package.json`.
+   - `git commit -m "release: vX.Y.Z"`, annotated `git tag vX.Y.Z` with the release notes as the tag body.
+   - Pushes commit + tag to `origin/main`.
+   - `gh release create vX.Y.Z --notes-file <release-notes>` files a GitHub Release.
+4. The push triggers `build-and-deploy-docs.yml`. The new `vX.Y.Z` lands in `version.json` + the SW cache key.
+5. The next visit to the SPA shows the new version chip; clients with a SW already installed get a one-shot reload via `controllerchange`.
+
+**Local dry-run**: `npm run release:dry` (or `node scripts/release.mjs --bump=auto --dry-run`) prints the inferred version + release notes preview without touching files. Useful for sanity-checking the bump kind before clicking the Run workflow button.
+
+**Don't manually edit `package.json.version`** — `scripts/release.mjs` owns that field. If you need a version override (e.g. force a major bump for a single fix that's actually a UX regression), pass `--bump=major` instead.
+
+### Release vs Deploy — they're not the same
+
+- **Deploy** = `build-and-deploy-docs.yml` builds `docs/` and ships it to Pages. Triggered by **every** push to `main` that matches the workflow's `paths` filter (exercise / SPA / doc edits).
+- **Release** = `release.yml` (manual dispatch) bumps version + tags + writes a GH Release. Releases also produce a deploy (because the workflow's commit + push lands on main), but only releases are user-facing "vX.Y.Z" snapshots.
+
+To make the difference visible to users, the SPA's header version chip distinguishes the two:
+
+- **Release build** — chip shows `vX.Y.Z` in the default colour. Detected when HEAD is exactly on a `vX.Y.Z` tag AND `package.json.version` matches.
+- **Dev build** — chip shows `vX.Y.Z+dev.N` (N = commits since the last release tag) in a subtle orange. Any deploy whose HEAD doesn't sit on a matching release tag.
+
+Both states are written into `docs/version.json` (`channel: "release" | "dev"`, `commitsAhead`, `gitSha`) by `scripts/build-exercises.mjs` via `git describe --tags --abbrev=0` + `git rev-list --count`. **CI MUST checkout with `fetch-depth: 0`** for those git commands to resolve — `build-and-deploy-docs.yml` and `release.yml` both set this.
+
+Practical implication for maintainers: as long as you keep merging changelog-eligible commits into main, deploys go out continuously labelled `vX.Y.Z+dev.N`. When you decide a batch is shippable (semantic milestone, end of a sprint, "I want users on a clean v0.2.0"), run the Release workflow. The next deploy then drops the `+dev.N` suffix and presents the clean release version.
+
+### One-time setup: PAT for protected-main pushes
+
+The release workflow pushes a `release: vX.Y.Z` commit and tag directly to `main`. If `main` is protected by a Repository Rule with an `update` rule (or similar push-blocker), the default `GITHUB_TOKEN` will be rejected with `GH013: Cannot update this protected ref`. Reason: workflows run as `github-actions[bot]`, which is **not** a Role-holder — Repository Rule bypass entries of type "Repository admin" / "Maintain" don't apply to the bot. Most GitHub plans also don't expose GitHub Actions as a bypass-able Integration in the Rulesets UI (this repo's bypass dropdown only offers Deploy keys / Repository admin / Maintain / Copilot — no GitHub Actions option).
+
+Fix path used by this repo: **fine-grained PAT**.
+
+1. **Generate the PAT** at github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens → **Generate new token**.
+   - Token name: `cka-exercises release`.
+   - Resource owner: your account (the repo owner — `xooooooooox`).
+   - Repository access: **Only select repositories** → `xooooooooox/cka-exercises`.
+   - Repository permissions:
+     - **Contents**: Read and write (push commit + tag)
+     - All others: default Read.
+   - Expiration: max 90 days (GitHub doesn't allow longer for fine-grained PATs).
+   - **Generate token** → copy it (shown once).
+2. **Store as repo secret** — repo Settings → Secrets and variables → Actions → New repository secret → Name `RELEASE_PAT`, value the token from step 1.
+3. `.github/workflows/release.yml` already wires `${{ secrets.RELEASE_PAT }}` into both `actions/checkout@v4` `with.token` and the release step's `env.GH_TOKEN`. Push then happens as your admin account → bypasses the Repository Rule.
+
+**Rotation**: the PAT expires in 90 days. GitHub emails a reminder ~7 days before expiry. To rotate, generate a new PAT (steps 1–2) using the same secret name `RELEASE_PAT` — the workflow picks it up automatically.
+
+**Verifying which ruleset is blocking** (handy when debugging future regressions):
+
+```
+gh api repos/<owner>/<repo>/rulesets --jq '.[] | {id, name}'
+gh api repos/<owner>/<repo>/rulesets/<id> --jq '{name, rules: [.rules[].type], bypass_actors}'
+```
+
+The ruleset whose `rules` array contains `update` is the one rejecting normal pushes.
+
+If the PAT is missing or has wrong scope, `scripts/release.mjs` detects the rejection (stderr matches `GH013` / `protected ref` / `rule violations`) and prints a hint pointing back to this section.
+
+## Common Tasks
+
+### Adding a new exercise
+
+1. Choose the right markdown file by curriculum domain.
+2. Choose the right H2 section (numbered curriculum sub-section, NOT the killer.sh section).
+3. **Append the new H3 block at the END of that section** (see ID-stability rule below).
+4. Include at least one `> 🔗 [breadcrumb](url)` line.
+5. Run `npm run build` to regenerate `docs/exercises.json`.
+6. Run `npm run serve` to preview locally.
+
+### ⚠️ ID-stability rule — append-only
+
+Exercise IDs are sequence-based (`ca-1-001`, `sc-99-005`, …) and are computed by `scripts/build-exercises.mjs` from the H3's position within its section. These IDs are the **keys for every user's `localStorage` progress** (Done state, bookmarks, saved answers, last verdict).
+
+**The rule:** when adding a new exercise, **always append it at the END** of its section. Never insert in the middle. Never delete in the middle.
+
+- ✅ Append at end of section → existing IDs unchanged → existing users' progress survives
+- ❌ Insert in middle of section → every subsequent ID shifts by +1 → existing users see their Done-marks land on the wrong exercises
+- ❌ Delete in middle of section → every subsequent ID shifts by −1 → same silent breakage
+
+If a deletion is genuinely unavoidable, call it out in the commit message so users know to re-mark the affected entries. There is no automatic migration.
+
+Killer.sh exercises go at the end of `## Killer.sh Mock Exam Questions`. CKA Past Exam entries go at the end of their domain section. New "general" exercises append to whichever numbered section they fit.
+
+KillerCoda exercises live in `## KillerCoda Mock Exam Questions` and are typically **bulk-imported** via `scripts/apply-killercoda-import.mjs` from the PDFs in `assets/killercoda/` — not hand-added. If you need to add a single KillerCoda question by hand, follow the same H3 format with the `[KillerCoda-Q<N>]` tag prefix.
+
+### Adding a killer.sh question
+
+1. Use the H3 format `### [Killer.sh A-Q<N>] <topic>: <short verb-phrase>` (mirror existing).
+2. Place under `## Killer.sh Mock Exam Questions` at the end of the relevant domain file.
+3. Include `> 🖥 Solve on: \`ssh <hostname>\`` immediately after the docs block.
+4. Format task body with proper Markdown lists, `> ℹ️` info notes, and an optional `**Lab context:**` block.
+
+### Renaming or restructuring sections
+
+The build script keys off `## <N>. <Title>` and `## Killer.sh Mock Exam Questions` exactly. Don't change those headings without updating the parser.
+
+### Updating the docs lookup table
+
+`scripts/k8s-docs-map.json` maps short page titles to `{ breadcrumb, url }`. Add an entry there and re-run `scripts/apply-killersh-polish.mjs` (or just edit markdown directly).
+
+### Solution editing checklist
+
+- Always include the kubernetes.io docs link.
+- Place exercises under the correct curriculum sub-topic.
+- Prefer `kubectl` over editing YAML manifests directly when the command exists.
+- Include the imperative + declarative form when both are common (`kubectl create deploy …` and a YAML manifest).
+- Keep code blocks compact; long YAML belongs in the solution, not in the task body.
+
+## CI / Deployment
+
+`.github/workflows/build-and-deploy-docs.yml`:
+- Triggers on push to `main` if any of `exercises/**`, `docs/**`, `scripts/build-exercises.mjs`, or the workflow itself changes.
+- Runs `node scripts/build-exercises.mjs` to regenerate `docs/exercises.json` on the runner.
+- Uploads `docs/` as the Pages artifact and deploys.
+- `docs/exercises.json` is **not** committed back to the repo (gitignored); each deploy builds fresh.
+
+Pages source must be set to "GitHub Actions" in the repo settings.
+
+## Notes
+
+### Things to be aware of
+
+- `docs/exercises.json` is **gitignored** (it's a build artifact). Don't commit it.
+- The killer.sh PDFs in `assets/killer-sh/` are user-provided after CKA registration; the KillerCoda PDFs in `assets/killercoda/` are similarly sourced. Both ship with the repo for now but might be removed if licensing concerns arise.
+- Killercoda's `sachin/CKA` course is referenced from the README but its content requires login and isn't reproducible here.
+
+### Out of scope
+
+- Hosting kubernetes.io article content (we only link out).
+- Verifying that documentation links return 200 (no broken-link checker yet — would be a good addition).
+- Spaced-repetition / Anki export (suggested in TODOs but not implemented).
+- Mobile-native app (the SPA is mobile-responsive but not a native shell).

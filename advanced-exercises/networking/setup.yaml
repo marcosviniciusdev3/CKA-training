@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecommerce-public
+  labels:
+    kubernetes.io/metadata.name: ecommerce-public
+    name: ecommerce-public
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecommerce-internal
+  labels:
+    kubernetes.io/metadata.name: ecommerce-internal
+    # Deliberately omit the traditional 'name: ecommerce-internal' label to test metadata name selectors
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecommerce-db
+  labels:
+    kubernetes.io/metadata.name: ecommerce-db
+    name: ecommerce-db
+---
+# Frontend Deployment in ecommerce-public
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: ecommerce-public
+  labels:
+    app: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: web
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+---
+# Backend API Deployment in ecommerce-internal
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-api
+  namespace: ecommerce-internal
+  labels:
+    app: backend-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend-api
+  template:
+    metadata:
+      labels:
+        app: backend-api
+        tier: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+---
+# Database Pod in ecommerce-db
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-db
+  namespace: ecommerce-db
+  labels:
+    app: secure-db
+    role: database
+spec:
+  containers:
+  - name: postgres
+    image: postgres:15-alpine
+    env:
+    - name: POSTGRES_PASSWORD
+      value: supersecret
+    ports:
+    - containerPort: 5432
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: ecommerce-public
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: frontend
+---
+# Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc
+  namespace: ecommerce-internal
+spec:
+  ports:
+  - port: 8080
+    targetPort: 80
+  selector:
+    app: backend-api
+---
+# Database Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-svc
+  namespace: ecommerce-db
+spec:
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: secure-db

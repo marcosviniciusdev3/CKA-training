@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: exercise-05
+  labels:
+    role: attacker
+    run: attacker
+  name: attacker
+spec:
+  containers:
+  - image: nginx:1.27
+    name: attacker
+    resources: {}
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+status: {}

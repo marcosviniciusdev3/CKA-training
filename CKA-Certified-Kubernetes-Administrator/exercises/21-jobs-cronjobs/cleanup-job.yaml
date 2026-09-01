@@ -1,0 +1,17 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cleanup-job
+  namespace: exercise-21
+spec:
+  completions: 3
+  parallelism: 1
+  template:
+    spec:
+      containers:
+      - name: busybox
+        image: busybox:1.37
+        command: ["echo", "Cleanup complete"]
+      restartPolicy: Never
+  backoffLimit: 4
+

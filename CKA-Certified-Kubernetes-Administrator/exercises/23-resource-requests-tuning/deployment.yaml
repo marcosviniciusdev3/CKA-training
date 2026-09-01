@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: exercise-23
+  labels:
+    app: my-app
+  name: my-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - image: nginx:1.27
+        name: nginx
+        resources: 
+          requests:
+            memory: 3Gi
+            cpu: 500m
+status: {}
